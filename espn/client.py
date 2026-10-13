@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -255,10 +255,29 @@ def _parse_game(event: dict, sport: str, league: str) -> ESPNGame | None:
         return None
 
 
+def _expand_dates(dates: str) -> list[str]:
+    """
+    ESPN's scoreboard endpoint now rejects YYYYMMDD-YYYYMMDD ranges with a 400,
+    but still accepts a single YYYYMMDD. Expand a range into one entry per day.
+    """
+    if "-" not in dates:
+        return [dates]
+    start_s, end_s = dates.split("-", 1)
+    start = datetime.strptime(start_s, "%Y%m%d")
+    end = datetime.strptime(end_s, "%Y%m%d")
+    days: list[str] = []
+    d = start
+    while d <= end and len(days) < 31:
+        days.append(d.strftime("%Y%m%d"))
+        d += timedelta(days=1)
+    return days
+
+
 async def get_scoreboard(sport: str, league: str, dates: str | None = None) -> list[ESPNGame]:
     """
     Fetch scoreboard for a sport/league.
     dates: optional YYYYMMDD or YYYYMMDD-YYYYMMDD range string.
+    A range is fetched as one request per day and merged.
     Cached for 5 minutes (bypass cache if dates is None = live/today).
     """
     cache_key = f"scoreboard:{sport}:{league}:{dates or 'today'}"
@@ -267,18 +286,41 @@ async def get_scoreboard(sport: str, league: str, dates: str | None = None) -> l
         return cached
 
     url = f"{BASE}/{sport}/{league}/scoreboard"
-    params: dict[str, Any] = {"limit": 200}
-    if dates:
-        params["dates"] = dates
+    day_list: list[str | None] = _expand_dates(dates) if dates else [None]
 
-    try:
-        data = await _get(url, params)
-    except Exception as e:
-        log.error("ESPN scoreboard fetch failed (%s/%s): %s", sport, league, e)
+    async def _fetch_day(day: str | None) -> dict:
+        params: dict[str, Any] = {"limit": 200}
+        if day:
+            params["dates"] = day
+        return await _get(url, params)
+
+    results = await asyncio.gather(
+        *(_fetch_day(d) for d in day_list), return_exceptions=True
+    )
+
+    events: list[dict] = []
+    seen_ids: set[str] = set()
+    ok = 0
+    for day, res in zip(day_list, results):
+        if isinstance(res, Exception):
+            log.error("ESPN scoreboard fetch failed (%s/%s, dates=%s): %s",
+                      sport, league, day, res)
+            continue
+        ok += 1
+        for event in res.get("events", []):
+            eid = str(event.get("id", ""))
+            if eid and eid in seen_ids:
+                continue
+            if eid:
+                seen_ids.add(eid)
+            events.append(event)
+
+    # Every request failed: don't cache an empty result
+    if ok == 0:
         return []
 
     games = []
-    for event in data.get("events", []):
+    for event in events:
         game = _parse_game(event, sport, league)
         if game:
             games.append(game)
