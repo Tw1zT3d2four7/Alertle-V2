@@ -208,6 +208,14 @@ def _parse_game(event: dict, sport: str, league: str) -> ESPNGame | None:
         ps = odds.get("pointSpread", {})
         ps_home_line = ps.get("home", {}).get("close", {}).get("line", "")
         ps_away_line = ps.get("away", {}).get("close", {}).get("line", "")
+        ps_home_price = (ps.get("home", {}).get("close", {}).get("odds", "")
+                         or ps.get("home", {}).get("open", {}).get("odds", ""))
+        ps_away_price = (ps.get("away", {}).get("close", {}).get("odds", "")
+                         or ps.get("away", {}).get("open", {}).get("odds", ""))
+        home_spread_disp = (f"{ps_home_line} ({ps_home_price})"
+                            if ps_home_line and ps_home_price else ps_home_line)
+        away_spread_disp = (f"{ps_away_line} ({ps_away_price})"
+                            if ps_away_line and ps_away_price else ps_away_line)
         if ps_home_line:
             home_abbrev = home.get("team", {}).get("abbreviation", "")
             spread = f"{home_abbrev} {ps_home_line}" if home_abbrev else ps_home_line
@@ -241,8 +249,8 @@ def _parse_game(event: dict, sport: str, league: str) -> ESPNGame | None:
             away_score=away_score,
             broadcast_networks=broadcasts,
             odds_spread=spread,
-            odds_home_spread=ps_home_line,
-            odds_away_spread=ps_away_line,
+            odds_home_spread=home_spread_disp,
+            odds_away_spread=away_spread_disp,
             odds_over_under=over_under,
             odds_home_ml=home_ml,
             odds_away_ml=away_ml,
